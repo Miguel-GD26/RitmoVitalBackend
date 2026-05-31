@@ -166,13 +166,17 @@ class AnalyzePatientView(APIView):
             FileService.cleanup_session(session_dir)
             return self._pacemaker_error(record_name)
 
-        cloudinary_urls = FileService.upload_ecg_to_cloudinary(session_dir)
-        FileService.cleanup_session(session_dir)
+        from django.conf import settings
+        if getattr(settings, 'CLOUDINARY_ENABLED', False):
+            ecg_source = FileService.upload_ecg_to_cloudinary(session_dir)
+            FileService.cleanup_session(session_dir)
+        else:
+            ecg_source = session_dir
 
         task_id = uuid.uuid4().hex
         cache.set(f'analysis_task:{task_id}', {'status': 'pending', 'message': 'Análisis en cola...'}, timeout=3600)
         analyze_annotated_task.apply_async(
-            args=[cloudinary_urls, record_name, paciente_id, page, page_size, request.user.pk],
+            args=[ecg_source, record_name, paciente_id, page, page_size, request.user.pk],
             task_id=task_id,
         )
         return ApiResponse.success(
@@ -242,13 +246,17 @@ class AnalyzePatientProductionView(APIView):
             FileService.cleanup_session(session_dir)
             return AnalyzePatientView._pacemaker_error(record_name)
 
-        cloudinary_urls = FileService.upload_ecg_to_cloudinary(session_dir)
-        FileService.cleanup_session(session_dir)
+        from django.conf import settings
+        if getattr(settings, 'CLOUDINARY_ENABLED', False):
+            ecg_source = FileService.upload_ecg_to_cloudinary(session_dir)
+            FileService.cleanup_session(session_dir)
+        else:
+            ecg_source = session_dir
 
         task_id = uuid.uuid4().hex
         cache.set(f'analysis_task:{task_id}', {'status': 'pending', 'message': 'Análisis en cola...'}, timeout=3600)
         analyze_production_task.apply_async(
-            args=[cloudinary_urls, record_name, paciente_id, page, page_size, request.user.pk],
+            args=[ecg_source, record_name, paciente_id, page, page_size, request.user.pk],
             task_id=task_id,
         )
         return ApiResponse.success(

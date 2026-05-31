@@ -29,12 +29,21 @@ def _fail(task_id: str, message: str) -> None:
 
 
 @shared_task(bind=True, name='classifier.tasks.analyze_annotated')
-def analyze_annotated_task(self, cloudinary_urls, record_name, paciente_id, page, page_size, user_id):
-    """Análisis ECG anotado (.dat + .atr + .hea). Descarga archivos desde Cloudinary."""
+def analyze_annotated_task(self, ecg_source, record_name, paciente_id, page, page_size, user_id):
+    """Análisis ECG anotado. ecg_source puede ser dict (URLs Cloudinary) o str (ruta local dev)."""
     task_id = self.request.id
-    _, session_dir = FileService.create_session()
+    if isinstance(ecg_source, dict):
+        _, session_dir = FileService.create_session()
+        try:
+            FileService.download_ecg_from_cloudinary(ecg_source, session_dir)
+        except Exception:
+            FileService.cleanup_session(session_dir)
+            logger.exception("Error descargando ECG desde Cloudinary en tarea %s", task_id)
+            _fail(task_id, 'Error al descargar archivos ECG desde almacenamiento.')
+            return
+    else:
+        session_dir = ecg_source
     try:
-        FileService.download_ecg_from_cloudinary(cloudinary_urls, session_dir)
         user = User.objects.get(pk=user_id)
         result = AnalysisOrchestratorService().run_annotated_from_session(
             session_dir=session_dir,
@@ -66,12 +75,21 @@ def analyze_annotated_task(self, cloudinary_urls, record_name, paciente_id, page
 
 
 @shared_task(bind=True, name='classifier.tasks.analyze_production')
-def analyze_production_task(self, cloudinary_urls, record_name, paciente_id, page, page_size, user_id):
-    """Análisis ECG producción (.dat + .hea). Descarga archivos desde Cloudinary."""
+def analyze_production_task(self, ecg_source, record_name, paciente_id, page, page_size, user_id):
+    """Análisis ECG producción. ecg_source puede ser dict (URLs Cloudinary) o str (ruta local dev)."""
     task_id = self.request.id
-    _, session_dir = FileService.create_session()
+    if isinstance(ecg_source, dict):
+        _, session_dir = FileService.create_session()
+        try:
+            FileService.download_ecg_from_cloudinary(ecg_source, session_dir)
+        except Exception:
+            FileService.cleanup_session(session_dir)
+            logger.exception("Error descargando ECG desde Cloudinary en tarea %s", task_id)
+            _fail(task_id, 'Error al descargar archivos ECG desde almacenamiento.')
+            return
+    else:
+        session_dir = ecg_source
     try:
-        FileService.download_ecg_from_cloudinary(cloudinary_urls, session_dir)
         user = User.objects.get(pk=user_id)
         result = AnalysisOrchestratorService().run_production_from_session(
             session_dir=session_dir,
