@@ -57,8 +57,8 @@ class PaginationInputSerializer(serializers.Serializer):
         required=False,
         default=100,
         min_value=1,
-        max_value=500,
-        help_text="Número de items por página (máximo 500)",
+        max_value=5000,
+        help_text="Número de items por página (máximo 5000)",
     )
 
 
