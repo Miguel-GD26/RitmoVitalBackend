@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+
+# Media (archivos subidos por usuarios)
+media/uploads/
+
+# Variables de entorno
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Modelos ML pesados (gestionar con Git LFS o descarga separada)
+*.h5
+*.keras
+*.pb
+*.tflite
+*.onnx
+
+# Datasets pesados
+classifier/data/
+classifier/mitbih_sample_demo.csv
+
+# Logs
+*.log
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# Documentación interna y recursos locales (no se suben al repo)
+docs/
+recursos/

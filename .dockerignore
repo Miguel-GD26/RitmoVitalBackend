@@ -1,0 +1,59 @@
+# =============================================================================
+# RitmoVital Backend — .dockerignore
+# =============================================================================
+# Archivos que NO deben copiarse a la imagen Docker.
+# Reduce tamaño de imagen y tiempo de build.
+# =============================================================================
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment files (sensibles — no copiar)
+.env
+.env.*
+
+# Base de datos local
+db.sqlite3
+db.sqlite3-journal
+
+# Documentación / Recursos no operacionales
+*.md
+recursos/
+CAMBIOS_BACKEND_AAMI_4_CLASES.md
+
+# Archivos de upload temporales
+uploads/
+media/uploads/
+
+# Tests (no necesarios en producción)
+classifier/tests/
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

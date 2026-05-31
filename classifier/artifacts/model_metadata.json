@@ -1,0 +1,28 @@
+{
+  "version": "1.0.0",
+  "trained_date": "2025-09-15",
+  "architecture": "Tri-Modal CNN + MultiHeadAttention",
+  "standard": "AAMI EC57:2012",
+  "dataset": "MIT-BIH Arrhythmia Database (48 registros, 360 Hz, ~110 000 latidos)",
+  "inputs": {
+    "cwt_image": [128, 128, 1],
+    "signal_1d": [260, 1],
+    "rr_intervals": [4]
+  },
+  "classes": {
+    "0": "Normal (N)",
+    "1": "Supraventricular (S)",
+    "2": "Ventricular (V)",
+    "3": "Fusión (F)"
+  },
+  "val_accuracy": 0.967,
+  "f1_per_class": {
+    "Normal (N)": 0.99,
+    "Supraventricular (S)": 0.87,
+    "Ventricular (V)": 0.94,
+    "Fusión (F)": 0.72
+  },
+  "file": "ultra_best.keras",
+  "size_mb": 17.58,
+  "sha256": "cb7d6c88b6bf239ca6049c2fbe9929cabb41d256266dc420df27c05c5f9f4d76"
+}
