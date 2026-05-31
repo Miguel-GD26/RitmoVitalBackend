@@ -12,7 +12,7 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser
 
-from core.permissions import IsMedico
+from core.permissions import IsInvestigador
 from core.responses import ApiResponse
 from core.exceptions import FileValidationError
 from classifier.serializers import (
@@ -145,7 +145,7 @@ class AnalyzePatientView(APIView):
     Requiere rol Médico.
     """
     parser_classes = [MultiPartParser]
-    permission_classes = [IsMedico]
+    permission_classes = [IsInvestigador]
     throttle_classes = [AnalysisRateThrottle]
 
     def post(self, request):
@@ -166,10 +166,13 @@ class AnalyzePatientView(APIView):
             FileService.cleanup_session(session_dir)
             return self._pacemaker_error(record_name)
 
+        cloudinary_urls = FileService.upload_ecg_to_cloudinary(session_dir)
+        FileService.cleanup_session(session_dir)
+
         task_id = uuid.uuid4().hex
         cache.set(f'analysis_task:{task_id}', {'status': 'pending', 'message': 'Análisis en cola...'}, timeout=3600)
         analyze_annotated_task.apply_async(
-            args=[session_dir, record_name, paciente_id, page, page_size, request.user.pk],
+            args=[cloudinary_urls, record_name, paciente_id, page, page_size, request.user.pk],
             task_id=task_id,
         )
         return ApiResponse.success(
@@ -217,7 +220,7 @@ class AnalyzePatientProductionView(APIView):
     Requiere rol Médico.
     """
     parser_classes = [MultiPartParser]
-    permission_classes = [IsMedico]
+    permission_classes = [IsInvestigador]
     throttle_classes = [AnalysisRateThrottle]
 
     def post(self, request):
@@ -239,10 +242,13 @@ class AnalyzePatientProductionView(APIView):
             FileService.cleanup_session(session_dir)
             return AnalyzePatientView._pacemaker_error(record_name)
 
+        cloudinary_urls = FileService.upload_ecg_to_cloudinary(session_dir)
+        FileService.cleanup_session(session_dir)
+
         task_id = uuid.uuid4().hex
         cache.set(f'analysis_task:{task_id}', {'status': 'pending', 'message': 'Análisis en cola...'}, timeout=3600)
         analyze_production_task.apply_async(
-            args=[session_dir, record_name, paciente_id, page, page_size, request.user.pk],
+            args=[cloudinary_urls, record_name, paciente_id, page, page_size, request.user.pk],
             task_id=task_id,
         )
         return ApiResponse.success(
@@ -258,7 +264,7 @@ class AnalyzePatientProductionView(APIView):
 )
 class AnalysisStatusView(APIView):
     """Polling endpoint para consultar el estado de un análisis ECG asíncrono."""
-    permission_classes = [IsMedico]
+    permission_classes = [IsInvestigador]
 
     def get(self, request, task_id: str):
         entry = cache.get(f'analysis_task:{task_id}')

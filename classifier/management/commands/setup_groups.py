@@ -9,22 +9,28 @@ Grupos:
   investigador — acceso solo a endpoints demo (classify-random)
 """
 
-from django.contrib.auth.models import Group, Permission
+from django.contrib.auth.models import Group, Permission, User
 from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand
 
 
+_FULL_PERMISSIONS = [
+    ('classifier', 'paciente',    'add_paciente'),
+    ('classifier', 'paciente',    'change_paciente'),
+    ('classifier', 'paciente',    'delete_paciente'),
+    ('classifier', 'paciente',    'view_paciente'),
+    ('classifier', 'analisisecg', 'add_analisisecg'),
+    ('classifier', 'analisisecg', 'view_analisisecg'),
+]
+
 GROUPS = {
     'medico': {
         'description': 'Acceso completo: CRUD pacientes + análisis ECG',
-        'permissions': [
-            ('classifier', 'paciente',    'add_paciente'),
-            ('classifier', 'paciente',    'change_paciente'),
-            ('classifier', 'paciente',    'delete_paciente'),
-            ('classifier', 'paciente',    'view_paciente'),
-            ('classifier', 'analisisecg', 'add_analisisecg'),
-            ('classifier', 'analisisecg', 'view_analisisecg'),
-        ],
+        'permissions': _FULL_PERMISSIONS,
+    },
+    'investigador': {
+        'description': 'Acceso completo: igual que médico',
+        'permissions': _FULL_PERMISSIONS,
     },
     'paciente': {
         'description': 'Solo lectura: ver su propio historial ECG',
@@ -32,10 +38,6 @@ GROUPS = {
             ('classifier', 'analisisecg', 'view_analisisecg'),
             ('classifier', 'paciente',    'view_paciente'),
         ],
-    },
-    'investigador': {
-        'description': 'Acceso demo: classify-random únicamente',
-        'permissions': [],
     },
 }
 
@@ -62,10 +64,10 @@ class Command(BaseCommand):
                 f'Grupo "{group_name}" — {status} con {len(perms_to_assign)} permiso(s).'
             ))
 
-        self.stdout.write(self.style.SUCCESS(
-            '\nPara asignar un rol:\n'
-            '  python manage.py shell\n'
-            '  >>> from django.contrib.auth.models import User, Group\n'
-            '  >>> u = User.objects.get(username="juan")\n'
-            '  >>> u.groups.add(Group.objects.get(name="medico"))  # o "paciente"\n'
-        ))
+        medico_group = Group.objects.get(name='medico')
+        superusers = User.objects.filter(is_superuser=True)
+        for su in superusers:
+            su.groups.add(medico_group)
+            self.stdout.write(self.style.SUCCESS(
+                f'Superusuario "{su.username}" asignado al grupo medico.'
+            ))

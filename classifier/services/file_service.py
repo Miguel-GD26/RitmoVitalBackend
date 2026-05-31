@@ -7,6 +7,7 @@ import uuid
 import shutil
 import logging
 
+import requests as http_requests
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 
@@ -134,3 +135,46 @@ class FileService:
     def get_record_path(session_dir, record_name):
         """Construye la ruta base del registro dentro del directorio de sesión."""
         return os.path.join(session_dir, record_name)
+
+    # ------------------------------------------------------------------
+    # Cloudinary — transferencia entre contenedores
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def upload_ecg_to_cloudinary(session_dir: str) -> dict:
+        """
+        Sube todos los archivos de session_dir a Cloudinary como raw.
+        Retorna {filename: secure_url}. Requiere CLOUDINARY_ENABLED=True.
+        """
+        import cloudinary.uploader
+
+        session_id = os.path.basename(session_dir)
+        urls: dict = {}
+        for fname in os.listdir(session_dir):
+            fpath = os.path.join(session_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            result = cloudinary.uploader.upload(
+                fpath,
+                resource_type='raw',
+                folder=f'ritmovital/ecg_sessions/{session_id}',
+                public_id=fname,
+                use_filename=True,
+                unique_filename=False,
+                overwrite=True,
+            )
+            urls[fname] = result['secure_url']
+            logger.debug("Subido a Cloudinary: %s → %s", fname, urls[fname])
+        return urls
+
+    @staticmethod
+    def download_ecg_from_cloudinary(cloudinary_urls: dict, session_dir: str) -> None:
+        """Descarga archivos ECG desde URLs de Cloudinary al session_dir local."""
+        os.makedirs(session_dir, exist_ok=True)
+        for fname, url in cloudinary_urls.items():
+            dest = os.path.join(session_dir, fname)
+            resp = http_requests.get(url, timeout=120)
+            resp.raise_for_status()
+            with open(dest, 'wb') as f:
+                f.write(resp.content)
+            logger.debug("Descargado desde Cloudinary: %s", fname)

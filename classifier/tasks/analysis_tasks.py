@@ -1,8 +1,9 @@
 """
 classifier.tasks.analysis_tasks — Tareas Celery para análisis ECG asíncrono.
 
-Los archivos ya están guardados en session_dir por la vista HTTP antes de
-encolar la tarea. La tarea no recibe archivos binarios — solo rutas.
+Los archivos ECG se transfieren entre contenedores vía Cloudinary:
+  - La vista HTTP los sube a Cloudinary y pasa las URLs al task.
+  - El task los descarga de Cloudinary a un session_dir local temporal.
 """
 import logging
 
@@ -15,6 +16,7 @@ from classifier.services.analysis_orchestrator import (
     PacemakerRecordError,
     NoBeatsFoundError,
 )
+from classifier.services.file_service import FileService
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -27,10 +29,12 @@ def _fail(task_id: str, message: str) -> None:
 
 
 @shared_task(bind=True, name='classifier.tasks.analyze_annotated')
-def analyze_annotated_task(self, session_dir, record_name, paciente_id, page, page_size, user_id):
-    """Análisis ECG anotado (.dat + .atr + .hea) desde sesión preexistente."""
+def analyze_annotated_task(self, cloudinary_urls, record_name, paciente_id, page, page_size, user_id):
+    """Análisis ECG anotado (.dat + .atr + .hea). Descarga archivos desde Cloudinary."""
     task_id = self.request.id
+    _, session_dir = FileService.create_session()
     try:
+        FileService.download_ecg_from_cloudinary(cloudinary_urls, session_dir)
         user = User.objects.get(pk=user_id)
         result = AnalysisOrchestratorService().run_annotated_from_session(
             session_dir=session_dir,
@@ -50,19 +54,24 @@ def analyze_annotated_task(self, session_dir, record_name, paciente_id, page, pa
         logger.info("Tarea anotada %s completada: %s", task_id, record_name)
     except PacemakerRecordError as e:
         _fail(task_id, f'Registro de marcapasos incompatible: {e}')
+        FileService.cleanup_session(session_dir)
     except NoBeatsFoundError as e:
         _fail(task_id, str(e))
+        FileService.cleanup_session(session_dir)
     except Exception:
         logger.exception("Error inesperado en tarea %s", task_id)
         _fail(task_id, 'Error interno del servidor durante el análisis.')
+        FileService.cleanup_session(session_dir)
         raise
 
 
 @shared_task(bind=True, name='classifier.tasks.analyze_production')
-def analyze_production_task(self, session_dir, record_name, paciente_id, page, page_size, user_id):
-    """Análisis ECG producción (.dat + .hea, sin anotaciones) desde sesión preexistente."""
+def analyze_production_task(self, cloudinary_urls, record_name, paciente_id, page, page_size, user_id):
+    """Análisis ECG producción (.dat + .hea). Descarga archivos desde Cloudinary."""
     task_id = self.request.id
+    _, session_dir = FileService.create_session()
     try:
+        FileService.download_ecg_from_cloudinary(cloudinary_urls, session_dir)
         user = User.objects.get(pk=user_id)
         result = AnalysisOrchestratorService().run_production_from_session(
             session_dir=session_dir,
@@ -82,9 +91,12 @@ def analyze_production_task(self, session_dir, record_name, paciente_id, page, p
         logger.info("Tarea producción %s completada: %s", task_id, record_name)
     except PacemakerRecordError as e:
         _fail(task_id, f'Registro de marcapasos incompatible: {e}')
+        FileService.cleanup_session(session_dir)
     except NoBeatsFoundError as e:
         _fail(task_id, str(e))
+        FileService.cleanup_session(session_dir)
     except Exception:
         logger.exception("Error inesperado en tarea producción %s", task_id)
         _fail(task_id, 'Error interno del servidor durante el análisis.')
+        FileService.cleanup_session(session_dir)
         raise
