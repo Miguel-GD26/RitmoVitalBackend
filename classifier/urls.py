@@ -7,6 +7,7 @@ from classifier.views import (
     AnalysisStatusView,
     ModelInfoView,
     HealthCheckView,
+    InvestigatorsView,
     AnalysisHistoryView,
     AnalysisPdfView,
     AnalysisCsvExportView,
@@ -33,14 +34,7 @@ v1_urlpatterns = [
 
 # Endpoints de infraestructura (sin versión)
 infra_urlpatterns = [
-    path(
-        'api/health/',
-        HealthCheckView.as_view(),
-        name='health_check',
-    ),
-    path(
-        'api/model-info/',
-        ModelInfoView.as_view(),
-        name='model_info',
-    ),
+    path('api/health/',         HealthCheckView.as_view(),    name='health_check'),
+    path('api/model-info/',     ModelInfoView.as_view(),      name='model_info'),
+    path('api/investigators/',  InvestigatorsView.as_view(),  name='investigators'),
 ]

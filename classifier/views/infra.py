@@ -61,6 +61,38 @@ class ModelInfoView(APIView):
 
 @extend_schema(
     tags=['info'],
+    summary='Investigadores registrados en el sistema',
+    responses={200: OpenApiResponse(description='Lista de usuarios con rol investigador')},
+)
+class InvestigatorsView(APIView):
+    """Público — lista de investigadores para mostrar en la página del modelo."""
+    parser_classes = [JSONParser]
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from django.contrib.auth.models import User
+        users = (
+            User.objects
+            .filter(groups__name='investigador', is_active=True)
+            .select_related('profile')
+            .order_by('first_name', 'last_name')
+        )
+        data = []
+        for user in users:
+            profile = getattr(user, 'profile', None)
+            full_name = f"{user.first_name} {user.last_name}".strip() or user.username
+            data.append({
+                'username':   user.username,
+                'full_name':  full_name,
+                'avatar_url': profile.avatar_url if profile else None,
+                'orcid':      profile.orcid      if profile else '',
+                'institucion': profile.institucion if profile else '',
+            })
+        return ApiResponse.success(data=data, message="Investigadores")
+
+
+@extend_schema(
+    tags=['info'],
     summary='Health check — estado del servicio y modelo ML',
     responses={
         200: OpenApiResponse(description='Servicio saludable'),

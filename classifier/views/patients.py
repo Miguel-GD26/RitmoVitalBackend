@@ -7,7 +7,7 @@ import logging
 from drf_spectacular.utils import extend_schema, OpenApiResponse
 from rest_framework.views import APIView
 
-from core.permissions import IsMedico
+from core.permissions import IsInvestigador
 from rest_framework.permissions import IsAdminUser
 from core.responses import ApiResponse
 from core.pagination import build_pagination_metadata
@@ -41,7 +41,7 @@ def _resolve_usuario_cuenta(numero_documento: str):
     responses={200: OpenApiResponse(description='Lista paginada de pacientes')},
 )
 class PatientListView(APIView):
-    permission_classes = [IsMedico | IsAdminUser]
+    permission_classes = [IsInvestigador | IsAdminUser]
 
     def get(self, request):
         from django.db.models import Q
@@ -53,8 +53,9 @@ class PatientListView(APIView):
 
         search = request.query_params.get('search', '').strip()
         sexo   = request.query_params.get('sexo', '').strip().upper()
-        # Admin ve todos los pacientes; médico solo los suyos
-        qs = Paciente.objects.all() if request.user.is_staff else Paciente.objects.filter(creado_por=request.user)
+        # Admin e investigador ven todos; médico solo los suyos
+        see_all = request.user.is_staff or request.user.groups.filter(name='investigador').exists()
+        qs = Paciente.objects.all() if see_all else Paciente.objects.filter(creado_por=request.user)
         if search:
             qs = qs.filter(
                 Q(nombre__icontains=search) |
@@ -95,11 +96,12 @@ class PatientListView(APIView):
     responses={200: OpenApiResponse(description='Detalle del paciente')},
 )
 class PatientDetailView(APIView):
-    permission_classes = [IsMedico | IsAdminUser]
+    permission_classes = [IsInvestigador | IsAdminUser]
 
     def _get_object(self, request, uuid):
         try:
-            if request.user.is_staff:
+            see_all = request.user.is_staff or request.user.groups.filter(name='investigador').exists()
+            if see_all:
                 return Paciente.objects.get(uuid=uuid)
             return Paciente.objects.get(uuid=uuid, creado_por=request.user)
         except Paciente.DoesNotExist:

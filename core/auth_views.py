@@ -502,6 +502,7 @@ class CurrentUserView(APIView):
     def get(self, request):
         user = request.user
         groups = list(user.groups.values_list('name', flat=True))
+        profile = getattr(user, 'profile', None)
         return ApiResponse.success(
             data={
                 'id': user.id,
@@ -509,6 +510,7 @@ class CurrentUserView(APIView):
                 'email': user.email,
                 'groups': groups,
                 'is_superuser': user.is_superuser,
+                'avatar_url': profile.avatar_url if profile else None,
             },
             message="Usuario autenticado",
         )

@@ -22,7 +22,7 @@ from classifier.views.history import (
 )
 from classifier.views.dashboard import DashboardStatsView
 from classifier.views.patients import PatientListView, PatientDetailView, PatientVincularView
-from classifier.views.infra import ModelInfoView, HealthCheckView
+from classifier.views.infra import ModelInfoView, HealthCheckView, InvestigatorsView
 
 __all__ = [
     'ClassifyRandomView',
@@ -38,4 +38,5 @@ __all__ = [
     'PatientVincularView',
     'ModelInfoView',
     'HealthCheckView',
+    'InvestigatorsView',
 ]
