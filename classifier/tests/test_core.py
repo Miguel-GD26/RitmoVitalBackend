@@ -145,7 +145,7 @@ class BuildPaginationMetadataTests(TestCase):
         """Paginación básica con 250 items, page=1, page_size=100."""
         result = build_pagination_metadata(250, page=1, page_size=100)
 
-        self.assertEqual(result['total'], 250)
+        self.assertEqual(result['count'], 250)
         self.assertEqual(result['page'], 1)
         self.assertEqual(result['page_size'], 100)
         self.assertEqual(result['total_pages'], 3)
@@ -179,7 +179,7 @@ class BuildPaginationMetadataTests(TestCase):
         """Lista vacía retorna total=0, total_pages=1."""
         result = build_pagination_metadata(0, page=1, page_size=100)
 
-        self.assertEqual(result['total'], 0)
+        self.assertEqual(result['count'], 0)
         self.assertEqual(result['total_pages'], 1)
 
     def test_page_clamped_to_max(self):
@@ -200,7 +200,7 @@ class PaginateListTests(TestCase):
         self.assertEqual(len(page_items), 100)
         self.assertEqual(page_items[0], 0)
         self.assertEqual(page_items[-1], 99)
-        self.assertEqual(meta['total'], 250)
+        self.assertEqual(meta['count'], 250)
 
     def test_last_page_partial(self):
         """Última página puede tener menos de page_size items."""
@@ -215,7 +215,7 @@ class PaginateListTests(TestCase):
         page_items, meta = paginate_list([], page=1, page_size=100)
 
         self.assertEqual(len(page_items), 0)
-        self.assertEqual(meta['total'], 0)
+        self.assertEqual(meta['count'], 0)
 
 
 # ---------------------------------------------------------------------------

@@ -81,6 +81,7 @@ DATABASES = {
         'PASSWORD': os.environ.get('DB_PASSWORD', ''),
         'HOST': os.environ.get('DB_HOST', 'localhost'),
         'PORT': os.environ.get('DB_PORT', '5432'),
+        'CONN_MAX_AGE': int(os.environ.get('CONN_MAX_AGE', '60')),
     }
 }
 
@@ -219,6 +220,19 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
+# Email — SMTP configurable vía variables de entorno
+# ---------------------------------------------------------------------------
+
+EMAIL_BACKEND  = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST     = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT     = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_USE_TLS  = os.environ.get('EMAIL_USE_TLS', 'True').lower() == 'true'
+EMAIL_HOST_USER     = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL  = os.environ.get('DEFAULT_FROM_EMAIL', 'RitmoVital <noreply@ritmovital.com>')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:4200')
+
+# ---------------------------------------------------------------------------
 # Celery — configuración base (broker y result backend se definen por entorno)
 # ---------------------------------------------------------------------------
 
@@ -234,6 +248,21 @@ CELERY_TASK_SOFT_TIME_LIMIT = 540  # 9 min: lanza SoftTimeLimitExceeded
 # Logging estructurado
 # ---------------------------------------------------------------------------
 
+# Usar JSON si python-json-logger está instalado (recomendado en producción
+# para ingestión en Datadog, Grafana Loki o Sentry). En caso contrario,
+# cae al formatter verbose legible para desarrollo.
+# pip install python-json-logger==2.0.7
+try:
+    from pythonjsonlogger import jsonlogger as _jl  # noqa: F401
+    _JSON_FORMATTER: dict = {
+        '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
+        'format': '%(asctime)s %(name)s %(levelname)s %(message)s',
+    }
+    _ACTIVE_FORMATTER = 'json'
+except ImportError:
+    _JSON_FORMATTER = {}
+    _ACTIVE_FORMATTER = 'verbose'
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -242,11 +271,12 @@ LOGGING = {
             'format': '[{asctime}] {levelname} {name} | {message}',
             'style': '{',
         },
+        **({'json': _JSON_FORMATTER} if _JSON_FORMATTER else {}),
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
+            'formatter': _ACTIVE_FORMATTER,
         },
     },
     'loggers': {

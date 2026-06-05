@@ -39,7 +39,7 @@ class LoginRateThrottle(AnonRateThrottle):
 
 
 class EmailLoginSerializer(serializers.Serializer):
-    """Autentica con email + password en lugar de username + password."""
+    """Autentica con email + password. Retorna el objeto User — los tokens se emiten en la vista."""
     email    = serializers.EmailField()
     password = serializers.CharField(write_only=True)
 
@@ -48,7 +48,7 @@ class EmailLoginSerializer(serializers.Serializer):
         password = data['password']
 
         try:
-            user = User.objects.get(email__iexact=email)
+            user = User.objects.select_related('profile').get(email__iexact=email)
         except User.DoesNotExist:
             raise serializers.ValidationError(
                 {'email': ['No existe una cuenta registrada con este correo.']}
@@ -64,8 +64,9 @@ class EmailLoginSerializer(serializers.Serializer):
                 {'email': ['Esta cuenta está desactivada.']}
             )
 
-        refresh = RefreshToken.for_user(user)
-        return {'access': str(refresh.access_token), 'refresh': str(refresh)}
+        # Retornar el user — los JWT se crean en la vista SOLO si no hay 2FA.
+        # Así se evita crear tokens que quedan huérfanos cuando 2FA bloquea el login.
+        return {'user': user}
 
 
 def _set_access_cookie(response, access_token: str) -> None:
@@ -117,22 +118,23 @@ class CookieLoginView(APIView):
         serializer = EmailLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        try:
-            user = User.objects.get(email__iexact=request.data.get('email', '').strip().lower())
-            profile = getattr(user, 'profile', None)
-            if profile and profile.totp_enabled and profile.totp_secret:
-                temp_token = signing.dumps({'uid': user.pk}, salt='2fa-login', compress=True)
-                return ApiResponse.success(
-                    data={'requires_2fa': True, 'temp_token': temp_token},
-                    message="Código 2FA requerido",
-                    status_code=202,
-                )
-        except User.DoesNotExist:
-            pass
+        # El serializer ya cargó el usuario con select_related('profile') — sin segunda query.
+        user    = serializer.validated_data['user']
+        profile = getattr(user, 'profile', None)
 
+        if profile and profile.totp_enabled and profile.totp_secret:
+            temp_token = signing.dumps({'uid': user.pk}, salt='2fa-login', compress=True)
+            return ApiResponse.success(
+                data={'requires_2fa': True, 'temp_token': temp_token},
+                message="Código 2FA requerido",
+                status_code=202,
+            )
+
+        # Solo creamos tokens cuando 2FA no está activo — evita tokens huérfanos.
+        refresh = RefreshToken.for_user(user)
         response = ApiResponse.success(data={}, message="Login exitoso")
-        _set_access_cookie(response, serializer.validated_data['access'])
-        _set_refresh_cookie(response, serializer.validated_data['refresh'])
+        _set_access_cookie(response, str(refresh.access_token))
+        _set_refresh_cookie(response, str(refresh))
         return response
 
 
@@ -481,6 +483,292 @@ class TOTPSetupView(APIView):
         return ApiResponse.success(data={}, message='2FA deshabilitado correctamente')
 
 
+# ---------------------------------------------------------------------------
+# Verificación de email
+# ---------------------------------------------------------------------------
+
+class SendVerificationEmailView(APIView):
+    """POST /api/v1/auth/send-verification-email/ — reenvía el email de verificación."""
+    permission_classes = [IsAuthenticated]
+
+    _COOLDOWN_KEY = 'verify_email_cooldown:{uid}'
+    _COOLDOWN_SECONDS = 120  # 2 minutos entre reenvíos
+
+    def post(self, request):
+        from django.core.cache import cache
+        from core.email_service import send_verification_email
+
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.email_verified:
+            return ApiResponse.error(
+                message='El correo ya está verificado.',
+                error_code='EMAIL_ALREADY_VERIFIED',
+                status_code=400,
+            )
+
+        cooldown_key = self._COOLDOWN_KEY.format(uid=request.user.pk)
+        if cache.get(cooldown_key):
+            return ApiResponse.error(
+                message='Espera 2 minutos antes de reenviar el correo.',
+                error_code='EMAIL_COOLDOWN',
+                status_code=429,
+            )
+
+        try:
+            send_verification_email(request.user)
+        except Exception:
+            return ApiResponse.error(
+                message='No se pudo enviar el correo. Intenta más tarde.',
+                error_code='EMAIL_SEND_ERROR',
+                status_code=500,
+            )
+
+        cache.set(cooldown_key, True, timeout=self._COOLDOWN_SECONDS)
+        return ApiResponse.success(
+            data={},
+            message=f'Correo de verificación enviado a {request.user.email}.',
+        )
+
+
+class VerifyEmailView(APIView):
+    """POST /api/v1/auth/verify-email/ — valida el token y marca el correo como verificado."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from core.email_service import validate_verification_token
+
+        token = request.data.get('token', '').strip()
+        if not token:
+            return ApiResponse.validation_error(
+                errors={'token': ['El token es requerido.']},
+                message='Token faltante',
+            )
+
+        uid = validate_verification_token(token)
+        if uid is None:
+            return ApiResponse.error(
+                message='El enlace de verificación es inválido o ha expirado.',
+                error_code='INVALID_VERIFY_TOKEN',
+                status_code=400,
+            )
+
+        try:
+            user = User.objects.get(pk=uid)
+        except User.DoesNotExist:
+            return ApiResponse.not_found('Usuario no encontrado.')
+
+        profile = getattr(user, 'profile', None)
+        if profile and not profile.email_verified:
+            profile.email_verified = True
+            profile.save(update_fields=['email_verified'])
+
+        return ApiResponse.success(data={}, message='Correo verificado correctamente.')
+
+
+# ---------------------------------------------------------------------------
+# Cambio de contraseña
+# ---------------------------------------------------------------------------
+
+class ChangePasswordView(APIView):
+    """POST /api/v1/auth/change-password/ — cambia la contraseña del usuario autenticado."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_password = request.data.get('current_password', '')
+        new_password     = request.data.get('new_password', '')
+
+        if not new_password or len(new_password) < 8:
+            return ApiResponse.validation_error(
+                errors={'new_password': ['La contraseña debe tener al menos 8 caracteres.']},
+                message='Contraseña inválida',
+            )
+
+        profile = getattr(request.user, 'profile', None)
+        forced  = profile.must_change_password if profile else False
+
+        if not forced:
+            if not current_password:
+                return ApiResponse.validation_error(
+                    errors={'current_password': ['La contraseña actual es requerida.']},
+                    message='Contraseña actual faltante',
+                )
+            if not request.user.check_password(current_password):
+                return ApiResponse.validation_error(
+                    errors={'current_password': ['La contraseña actual es incorrecta.']},
+                    message='Contraseña incorrecta',
+                )
+
+        if new_password == current_password and not forced:
+            return ApiResponse.validation_error(
+                errors={'new_password': ['La nueva contraseña debe ser diferente a la actual.']},
+                message='Contraseña sin cambios',
+            )
+
+        request.user.set_password(new_password)
+        request.user.save(update_fields=['password'])
+
+        if profile and profile.must_change_password:
+            profile.must_change_password = False
+            profile.save(update_fields=['must_change_password'])
+
+        # Rotar tokens: el cliente debe re-autenticarse con la nueva contraseña
+        refresh = RefreshToken.for_user(request.user)
+        response = ApiResponse.success(data={}, message='Contraseña actualizada correctamente.')
+        _set_access_cookie(response, str(refresh.access_token))
+        _set_refresh_cookie(response, str(refresh))
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Perfil del usuario autenticado
+# ---------------------------------------------------------------------------
+
+class ProfileView(APIView):
+    """GET/PATCH /api/v1/auth/profile/ — perfil editable del usuario autenticado."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user    = request.user
+        profile = getattr(user, 'profile', None)
+        groups  = list(user.groups.values_list('name', flat=True))
+        return ApiResponse.success(
+            data=self._serialize(user, profile, groups),
+            message='Perfil obtenido',
+        )
+
+    def patch(self, request):
+        user    = request.user
+        profile = getattr(user, 'profile', None)
+
+        user_fields    = ('first_name', 'last_name')
+        profile_fields = ('fecha_nacimiento', 'sexo', 'numero_colegiatura', 'orcid', 'institucion')
+
+        user_changed    = False
+        profile_changed = False
+
+        # Cambio de username con validación de unicidad
+        if 'username' in request.data:
+            new_username = request.data['username'].strip()
+            if new_username and new_username != user.username:
+                if User.objects.filter(username=new_username).exclude(pk=user.pk).exists():
+                    return ApiResponse.validation_error(
+                        errors={'username': ['Este nombre de usuario ya está en uso.']},
+                        message='Nombre de usuario no disponible',
+                    )
+                user.username = new_username
+                user_changed = True
+
+        for field in user_fields:
+            if field in request.data:
+                setattr(user, field, request.data[field])
+                user_changed = True
+        if user_changed:
+            save_fields = [f for f in user_fields if f in request.data]
+            if 'username' in request.data and request.data['username'].strip():
+                save_fields.append('username')
+            user.save(update_fields=save_fields)
+
+        if profile:
+            # Solo los DateField/nullable aceptan None; CharFields aceptan cadena vacía
+            _nullable = frozenset({'fecha_nacimiento'})
+            for field in profile_fields:
+                if field in request.data:
+                    value = request.data[field]
+                    if field in _nullable and value == '':
+                        value = None
+                    setattr(profile, field, value)
+                    profile_changed = True
+            if profile_changed:
+                changed = [f for f in profile_fields if f in request.data]
+                profile.save(update_fields=changed)
+                # Refrescar para que los campos tengan tipos Python correctos
+                # (ej: fecha_nacimiento queda como str en memoria tras setattr)
+                profile.refresh_from_db(fields=changed)
+
+        groups = list(user.groups.values_list('name', flat=True))
+        return ApiResponse.success(
+            data=self._serialize(user, profile, groups),
+            message='Perfil actualizado',
+        )
+
+    @staticmethod
+    def _serialize(user, profile, groups):
+        return {
+            'id':               user.id,
+            'username':         user.username,
+            'email':            user.email,
+            'first_name':       user.first_name,
+            'last_name':        user.last_name,
+            'groups':           groups,
+            'is_superuser':     user.is_superuser,
+            'avatar_url':       profile.avatar_url if profile else None,
+            'tipo_documento':   profile.tipo_documento if profile else '',
+            'numero_documento': profile.numero_documento if profile else '',
+            'fecha_nacimiento': profile.fecha_nacimiento.isoformat() if (profile and profile.fecha_nacimiento) else None,
+            'sexo':             profile.sexo if profile else '',
+            'numero_colegiatura': profile.numero_colegiatura if profile else '',
+            'orcid':            profile.orcid if profile else '',
+            'institucion':      profile.institucion if profile else '',
+            'email_verified':        profile.email_verified if profile else True,
+            'must_change_password':  profile.must_change_password if profile else False,
+        }
+
+
+class ProfileAvatarView(APIView):
+    """POST /api/v1/auth/profile/avatar/ — sube o actualiza el avatar del usuario autenticado."""
+    from rest_framework.parsers import MultiPartParser
+    parser_classes = [MultiPartParser]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        file = request.FILES.get('avatar')
+        if not file:
+            return ApiResponse.validation_error(
+                errors={'avatar': ['Se requiere un archivo de imagen.']},
+                message='Archivo faltante',
+            )
+
+        allowed = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+        if file.content_type not in allowed:
+            return ApiResponse.validation_error(
+                errors={'avatar': ['Formato no permitido. Use JPG, PNG, GIF o WebP.']},
+                message='Formato inválido',
+            )
+
+        if file.size > 2 * 1024 * 1024:
+            return ApiResponse.validation_error(
+                errors={'avatar': ['El avatar no puede superar 2 MB.']},
+                message='Archivo muy grande',
+            )
+
+        profile = getattr(request.user, 'profile', None)
+        if not profile:
+            return ApiResponse.error(message='Perfil no encontrado.', status_code=404)
+
+        try:
+            import cloudinary.uploader
+            result = cloudinary.uploader.upload(
+                file,
+                folder='ritmovital/avatars',
+                public_id=f'user_{request.user.pk}',
+                overwrite=True,
+                resource_type='image',
+                transformation=[{'width': 256, 'height': 256, 'crop': 'fill', 'gravity': 'face'}],
+            )
+            profile.avatar_url = result['secure_url']
+            profile.save(update_fields=['avatar_url'])
+            return ApiResponse.success(
+                data={'avatar_url': profile.avatar_url},
+                message='Avatar actualizado correctamente.',
+            )
+        except Exception:
+            logger.exception("Error subiendo avatar del usuario %s", request.user.pk)
+            return ApiResponse.error(
+                message='No se pudo subir el avatar. Intenta más tarde.',
+                status_code=500,
+            )
+
+
 @extend_schema(
     tags=['auth'],
     summary='Me — datos del usuario autenticado (verificación de sesión)',
@@ -511,6 +799,8 @@ class CurrentUserView(APIView):
                 'groups': groups,
                 'is_superuser': user.is_superuser,
                 'avatar_url': profile.avatar_url if profile else None,
+                'email_verified': profile.email_verified if profile else True,
+                'must_change_password': profile.must_change_password if profile else False,
             },
             message="Usuario autenticado",
         )

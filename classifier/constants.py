@@ -4,7 +4,12 @@ classifier.constants — Constantes centralizadas del dominio ML/ECG.
 Todas las constantes de configuración del modelo, mapeos de etiquetas,
 y parámetros del pipeline de inferencia se definen aquí para evitar
 valores hardcodeados dispersos en views, utils, y services.
+
+LABELS_MAP y AAMI_MAPPING se cargan desde model_metadata.json (OCP):
+actualizar el modelo solo requiere editar el JSON, no el código Python.
 """
+import json
+import os
 
 # ---------------------------------------------------------------------------
 # Dimensiones del modelo tri-modal
@@ -15,15 +20,41 @@ LEN_RR = 4             # Número de features RR-interval
 IMG_SIZE = 128          # Tamaño del escalograma CWT (IMG_SIZE × IMG_SIZE)
 
 # ---------------------------------------------------------------------------
-# Mapeo de etiquetas AAMI EC57:2012 — 4 clases oficiales
+# Mapeos AAMI EC57:2012 — cargados desde model_metadata.json
 # ---------------------------------------------------------------------------
 
-LABELS_MAP = {
+_METADATA_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    'classifier', 'artifacts', 'model_metadata.json',
+)
+
+_LABELS_MAP_FALLBACK = {
     0: "Normal (N)",
     1: "Supraventricular (S)",
     2: "Ventricular (V)",
     3: "Fusión (F)",
 }
+
+_AAMI_MAPPING_FALLBACK = {
+    'N': 0, 'L': 0, 'R': 0, 'e': 0, 'j': 0,
+    'A': 1, 'a': 1, 'J': 1, 'S': 1,
+    'V': 2, 'E': 2,
+    'F': 3,
+    '/': -1, 'f': -1, 'Q': -1, '[': -1, '!': -1,
+    ']': -1, 'x': -1, '(': -1, ')': -1, 'p': -1,
+    't': -1, 'u': -1, '`': -1, "'": -1, '^': -1,
+    '|': -1, '~': -1, '+': -1, 's': -1, 'T': -1,
+    '*': -1, 'D': -1, '=': -1, '"': -1, '@': -1,
+}
+
+try:
+    with open(_METADATA_PATH, encoding='utf-8') as _f:
+        _meta = json.load(_f)
+    LABELS_MAP: dict[int, str] = {int(k): v for k, v in _meta['labels_map'].items()}
+    AAMI_MAPPING: dict[str, int] = _meta['aami_mapping']
+except (FileNotFoundError, KeyError, ValueError):
+    LABELS_MAP = _LABELS_MAP_FALLBACK
+    AAMI_MAPPING = _AAMI_MAPPING_FALLBACK
 
 # ---------------------------------------------------------------------------
 # Parámetros CWT (Continuous Wavelet Transform)
@@ -32,30 +63,6 @@ LABELS_MAP = {
 WINDOW_SIZE = 260
 CWT_SIZE = 128
 WAVELET = 'cmor1.5-1.0'
-
-# ---------------------------------------------------------------------------
-# Mapeo de símbolos MIT-BIH a clases AAMI EC57:2012
-#
-# Clases válidas:  0=Normal, 1=Supraventricular, 2=Ventricular, 3=Fusión
-# Clase -1:        Excluidos (no son clases AAMI oficiales)
-# ---------------------------------------------------------------------------
-
-AAMI_MAPPING = {
-    # Normal (N) — clase 0
-    'N': 0, 'L': 0, 'R': 0, 'e': 0, 'j': 0,
-    # Supraventricular (S) — clase 1
-    'A': 1, 'a': 1, 'J': 1, 'S': 1,
-    # Ventricular (V) — clase 2
-    'V': 2, 'E': 2,
-    # Fusión (F) — clase 3
-    'F': 3,
-    # Excluidos — NO son clases AAMI oficiales
-    '/': -1, 'f': -1, 'Q': -1, '[': -1, '!': -1,
-    ']': -1, 'x': -1, '(': -1, ')': -1, 'p': -1,
-    't': -1, 'u': -1, '`': -1, "'": -1, '^': -1,
-    '|': -1, '~': -1, '+': -1, 's': -1, 'T': -1,
-    '*': -1, 'D': -1, '=': -1, '"': -1, '@': -1,
-}
 
 # ---------------------------------------------------------------------------
 # Archivos del modelo (relativos a BASE_DIR)

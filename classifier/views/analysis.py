@@ -6,6 +6,7 @@ import logging
 import uuid
 
 import numpy as np
+from django.conf import settings
 from django.core.cache import cache
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiResponse
 from rest_framework.throttling import UserRateThrottle
@@ -83,19 +84,18 @@ class ClassifyRandomView(APIView):
         )
 
     def post(self, request):
-        from django.core.cache import cache
-
         serializer = BeatIndexInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         beat_index = serializer.validated_data['beat_index']
 
-        cache_key = f'beat_classify:{beat_index}'
+        ml_service = MLService()
+        ml_service.initialize()
+
+        model_tag = (ml_service.model_sha256 or 'nosha')[:8]
+        cache_key = f'beat_classify:{beat_index}:{model_tag}'
         cached = cache.get(cache_key)
         if cached:
             return ApiResponse.success(data=cached, message="Clasificación completada exitosamente")
-
-        ml_service = MLService()
-        ml_service.initialize()
 
         if not ml_service.has_test_data:
             return ApiResponse.ml_unavailable(message="Dataset de prueba no disponible")
@@ -166,7 +166,6 @@ class AnalyzePatientView(APIView):
             FileService.cleanup_session(session_dir)
             return self._pacemaker_error(record_name)
 
-        from django.conf import settings
         if getattr(settings, 'CLOUDINARY_ENABLED', False):
             ecg_source = FileService.upload_ecg_to_cloudinary(session_dir)
             FileService.cleanup_session(session_dir)
@@ -246,7 +245,6 @@ class AnalyzePatientProductionView(APIView):
             FileService.cleanup_session(session_dir)
             return AnalyzePatientView._pacemaker_error(record_name)
 
-        from django.conf import settings
         if getattr(settings, 'CLOUDINARY_ENABLED', False):
             ecg_source = FileService.upload_ecg_to_cloudinary(session_dir)
             FileService.cleanup_session(session_dir)

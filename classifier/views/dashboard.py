@@ -35,11 +35,12 @@ class DashboardStatsView(APIView):
         if cached is not None:
             return ApiResponse.success(data=cached, message="Estadísticas del dashboard obtenidas")
 
-        if user.is_superuser or user.groups.filter(name='administrador').exists():
+        user_groups = set(user.groups.values_list('name', flat=True))
+        if user.is_superuser or 'administrador' in user_groups:
             qs = AnalisisECG.objects.all()
-        elif user.groups.filter(name__in=['medico', 'investigador']).exists():
+        elif user_groups & {'medico', 'investigador'}:
             qs = AnalisisECG.objects.filter(usuario=user)
-        elif user.groups.filter(name='paciente').exists():
+        elif 'paciente' in user_groups:
             qs = AnalisisECG.objects.filter(paciente__usuario_cuenta=user)
         else:
             qs = AnalisisECG.objects.none()

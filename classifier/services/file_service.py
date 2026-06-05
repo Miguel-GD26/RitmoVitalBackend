@@ -38,7 +38,7 @@ class FileService:
     @staticmethod
     def create_session():
         """Crea directorio temporal de sesión. Retorna (session_id, session_dir_path)."""
-        session_id = str(uuid.uuid4())[:8]
+        session_id = str(uuid.uuid4())[:16]
         session_dir = os.path.join(
             FileService._get_upload_base_dir(), session_id
         )
@@ -169,12 +169,13 @@ class FileService:
 
     @staticmethod
     def download_ecg_from_cloudinary(cloudinary_urls: dict, session_dir: str) -> None:
-        """Descarga archivos ECG desde URLs de Cloudinary al session_dir local."""
+        """Descarga archivos ECG desde URLs de Cloudinary al session_dir local (streaming)."""
         os.makedirs(session_dir, exist_ok=True)
         for fname, url in cloudinary_urls.items():
             dest = os.path.join(session_dir, fname)
-            resp = http_requests.get(url, timeout=120)
-            resp.raise_for_status()
-            with open(dest, 'wb') as f:
-                f.write(resp.content)
+            with http_requests.get(url, stream=True, timeout=120) as resp:
+                resp.raise_for_status()
+                with open(dest, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
             logger.debug("Descargado desde Cloudinary: %s", fname)

@@ -3,7 +3,18 @@ import os
 
 from .base import *  # noqa: F401, F403
 
+# Falla explícitamente si SECRET_KEY no está configurada.
+# Un KeyError en arranque es preferible a datos médicos cifrados con clave pública conocida.
+SECRET_KEY = os.environ['SECRET_KEY']
+
 DEBUG = False
+
+# Headers de seguridad HTTP
+SESSION_COOKIE_SECURE     = True
+SECURE_HSTS_SECONDS       = 31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
 # Bearer fallback deshabilitado permanentemente en producción.
 # El env var se ignora intencionalmente — la protección HttpOnly no puede
 # depender de que nadie olvide setear una variable de entorno.
@@ -43,7 +54,7 @@ REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
 # Celery — broker y result backend en Redis
 CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = f'redis://{REDIS_URL.split("://", 1)[-1]}'
+CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_TASK_ALWAYS_EAGER = False
 
 CACHES = {

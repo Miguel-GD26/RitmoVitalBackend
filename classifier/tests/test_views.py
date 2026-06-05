@@ -49,7 +49,7 @@ class ClassifyRandomGetTests(TestCase):
         self.user = User.objects.create_user(username='testuser_' + str(id(self)), password='password123')
         self.client.force_authenticate(user=self.user)
 
-    @patch('classifier.views.MLService')
+    @patch('classifier.views.analysis.MLService')
     def test_get_response_format(self, MockMLService):
         """GET retorna {success: true, data: {ecg_plot, beat_index}}."""
         mock_instance = MockMLService.return_value
@@ -71,7 +71,7 @@ class ClassifyRandomGetTests(TestCase):
         self.assertIn('timestamp', data)
         self.assertEqual(data['data']['beat_index'], 42)
 
-    @patch('classifier.views.MLService')
+    @patch('classifier.views.analysis.MLService')
     def test_get_no_test_data(self, MockMLService):
         """GET sin dataset de prueba retorna 503."""
         mock_instance = MockMLService.return_value
@@ -95,8 +95,8 @@ class ClassifyRandomPostTests(TestCase):
         self.user = User.objects.create_user(username='testuser_' + str(id(self)), password='password123')
         self.client.force_authenticate(user=self.user)
 
-    @patch('classifier.views.ECGProcessor')
-    @patch('classifier.views.MLService')
+    @patch('classifier.views.analysis.ECGProcessor')
+    @patch('classifier.views.analysis.MLService')
     def test_post_valid_beat_index(self, MockMLService, MockECGProcessor):
         """POST con beat_index válido retorna predicción exitosa."""
         mock_ml = MockMLService.return_value
@@ -170,7 +170,7 @@ class ClassifyRandomPostTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    @patch('classifier.views.MLService')
+    @patch('classifier.views.analysis.MLService')
     def test_post_out_of_range_beat_index(self, MockMLService):
         """POST con beat_index fuera de rango retorna 400."""
         mock_ml = MockMLService.return_value
@@ -232,7 +232,7 @@ class ResponseEnvelopeTests(TestCase):
         self.assertNotIn('traceback', response_str.lower())
         self.assertNotIn('.py', response_str.lower())
 
-    @patch('classifier.views.MLService')
+    @patch('classifier.views.analysis.MLService')
     def test_success_response_has_standard_fields(self, MockMLService):
         """Las respuestas exitosas contienen success, message, data, timestamp."""
         mock_ml = MockMLService.return_value
@@ -285,3 +285,69 @@ class ThrottlingTests(TestCase):
             response.status_code,
             [status.HTTP_429_TOO_MANY_REQUESTS, status.HTTP_400_BAD_REQUEST],
         )
+
+
+@override_settings(REST_FRAMEWORK=TEST_REST_FRAMEWORK)
+class HistoryFilterByPacienteUUIDTests(TestCase):
+    """
+    Regresión: GET /api/v1/history/?paciente_id=<uuid> debe retornar 200.
+
+    Bug original: filter(paciente_id=uuid_string) comparaba UUID contra PK entera
+    del FK → DataError en PostgreSQL. Corregido a filter(paciente__uuid=uuid_string).
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        from classifier.models import Paciente, AnalisisECG
+
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='medico_hist', email='medico_hist@test.com', password='Pass123!'
+        )
+        group, _ = Group.objects.get_or_create(name='medico')
+        self.user.groups.add(group)
+        self.client.force_authenticate(user=self.user)
+
+        self.paciente = Paciente.objects.create(
+            nombre='Ana', apellido='García', creado_por=self.user
+        )
+        self.analisis = AnalisisECG.objects.create(
+            usuario=self.user,
+            paciente=self.paciente,
+            record_name='100',
+            modo='anotado',
+            total_latidos=10,
+            latidos_procesados=10,
+        )
+
+    def test_filter_by_paciente_uuid_returns_200(self):
+        """El filtro por uuid del paciente no debe producir 500."""
+        response = self.client.get(
+            f'/api/v1/history/?page=1&page_size=15&paciente_id={self.paciente.uuid}'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.json()['success'])
+
+    def test_filter_by_paciente_uuid_returns_correct_analysis(self):
+        """El filtro devuelve solo los análisis del paciente indicado."""
+        response = self.client.get(
+            f'/api/v1/history/?paciente_id={self.paciente.uuid}'
+        )
+        data = response.json()
+        self.assertEqual(data['pagination']['count'], 1)
+        self.assertEqual(data['data'][0]['record_name'], '100')
+
+    def test_filter_by_unknown_uuid_returns_empty(self):
+        """Un UUID que no existe devuelve lista vacía, no error."""
+        import uuid
+        response = self.client.get(
+            f'/api/v1/history/?paciente_id={uuid.uuid4()}'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['pagination']['count'], 0)
+
+    def test_history_without_paciente_filter_returns_all(self):
+        """Sin filtro de paciente devuelve todos los análisis del usuario."""
+        response = self.client.get('/api/v1/history/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(response.json()['pagination']['count'], 1)

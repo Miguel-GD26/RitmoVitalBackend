@@ -39,11 +39,12 @@ class AnalysisHistoryView(APIView):
         qs = AnalisisECG.objects.select_related('paciente', 'usuario').order_by('-fecha')
 
         user = request.user
-        if user.is_superuser or user.groups.filter(name='administrador').exists():
+        user_groups = set(user.groups.values_list('name', flat=True))
+        if user.is_superuser or 'administrador' in user_groups:
             pass  # ve todos los análisis
-        elif user.groups.filter(name__in=['medico', 'investigador']).exists():
+        elif user_groups & {'medico', 'investigador'}:
             qs = qs.filter(usuario=user)
-        elif user.groups.filter(name='paciente').exists():
+        elif 'paciente' in user_groups:
             qs = qs.filter(paciente__usuario_cuenta=user)
         else:
             qs = qs.none()
@@ -62,7 +63,8 @@ class AnalysisHistoryView(APIView):
                 Q(paciente__apellido__icontains=search)
             )
         if paciente_id:
-            qs = qs.filter(paciente_id=paciente_id)
+            # El frontend envía el uuid del paciente, no su PK entera.
+            qs = qs.filter(paciente__uuid=paciente_id)
 
         total = qs.count()
         start = (page - 1) * page_size
@@ -113,7 +115,7 @@ class AnalysisCsvExportView(APIView):
             AnalisisECG.objects
             .filter(usuario=request.user)
             .select_related('paciente')
-            .order_by('-fecha')
+            .order_by('-fecha')[:5000]  # límite para prevenir OOM en cuentas con muchos registros
         )
 
         output = io.StringIO()

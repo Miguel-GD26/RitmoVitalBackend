@@ -57,7 +57,7 @@ class AdminUserListView(APIView):
         page      = max(int(request.query_params.get('page', 1)), 1)
         page_size = min(int(request.query_params.get('page_size', 20)), 100)
 
-        qs = User.objects.prefetch_related('groups', 'profile').order_by('-date_joined')
+        qs = User.objects.select_related('profile').prefetch_related('groups').order_by('-date_joined')
 
         if search:
             qs = qs.filter(
@@ -135,6 +135,12 @@ class AdminUserListView(APIView):
 
 @extend_schema(tags=['admin'], summary='Editar o desactivar un usuario')
 class AdminUserDetailView(APIView):
+    """
+    SRP: put() solo orquesta. Cada responsabilidad vive en su propio método:
+      _update_basic_data  → datos personales y estado de la cuenta
+      _assign_role        → membresía de grupos y flag is_staff
+      _update_profile     → campos extendidos del perfil
+    """
     permission_classes = [IsAdminUser]
 
     def _get(self, uuid):
@@ -151,36 +157,9 @@ class AdminUserDetailView(APIView):
         if user.is_superuser:
             return ApiResponse.error("No se puede editar a un superusuario.", status_code=403)
 
-        user.first_name = request.data.get('first_name', user.first_name)
-        user.last_name  = request.data.get('last_name',  user.last_name)
-        user.is_active  = request.data.get('is_active',  user.is_active)
-        user.save()
-
-        role = request.data.get('role')
-        if role is not None:
-            user.groups.clear()
-            if role:
-                group, _ = Group.objects.get_or_create(name=role)
-                user.groups.add(group)
-            user.is_staff = (role == 'administrador')
-            user.save()
-
-        profile, _ = UserProfile.objects.get_or_create(user=user)
-        if 'tipo_documento' in request.data:
-            profile.tipo_documento = request.data['tipo_documento']
-        if 'numero_documento' in request.data:
-            profile.numero_documento = request.data['numero_documento'].strip()
-        if 'fecha_nacimiento' in request.data:
-            profile.fecha_nacimiento = request.data['fecha_nacimiento'] or None
-        if 'sexo' in request.data:
-            profile.sexo = request.data['sexo'].strip()
-        if 'numero_colegiatura' in request.data:
-            profile.numero_colegiatura = request.data['numero_colegiatura'].strip()
-        if 'orcid' in request.data:
-            profile.orcid = request.data['orcid'].strip()
-        if 'institucion' in request.data:
-            profile.institucion = request.data['institucion'].strip()
-        profile.save()
+        self._update_basic_data(user, request.data)
+        self._assign_role(user, request.data.get('role'))
+        self._update_profile(user, request.data)
 
         return ApiResponse.success(data=_serialize_user(user), message="Usuario actualizado")
 
@@ -194,8 +173,46 @@ class AdminUserDetailView(APIView):
             return ApiResponse.error("No se puede desactivar a un superusuario.", status_code=403)
 
         user.is_active = False
-        user.save()
+        user.save(update_fields=['is_active'])
         return ApiResponse.success(message="Usuario desactivado correctamente")
+
+    @staticmethod
+    def _update_basic_data(user, data) -> None:
+        user.first_name = data.get('first_name', user.first_name)
+        user.last_name  = data.get('last_name',  user.last_name)
+        user.is_active  = data.get('is_active',  user.is_active)
+        user.save(update_fields=['first_name', 'last_name', 'is_active'])
+
+    @staticmethod
+    def _assign_role(user, role) -> None:
+        if role is None:
+            return
+        user.groups.clear()
+        if role:
+            group, _ = Group.objects.get_or_create(name=role)
+            user.groups.add(group)
+        user.is_staff = (role == 'administrador')
+        user.save(update_fields=['is_staff'])
+
+    @staticmethod
+    def _update_profile(user, data) -> None:
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        fields_map = {
+            'tipo_documento':    lambda v: v,
+            'numero_documento':  lambda v: v.strip(),
+            'fecha_nacimiento':  lambda v: v or None,
+            'sexo':              lambda v: v.strip(),
+            'numero_colegiatura': lambda v: v.strip(),
+            'orcid':             lambda v: v.strip(),
+            'institucion':       lambda v: v.strip(),
+        }
+        updated = []
+        for field, transform in fields_map.items():
+            if field in data:
+                setattr(profile, field, transform(data[field]))
+                updated.append(field)
+        if updated:
+            profile.save(update_fields=updated)
 
 
 @extend_schema(tags=['admin'], summary='Subir o actualizar avatar de usuario')

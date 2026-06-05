@@ -44,6 +44,9 @@ class UserProfile(models.Model):
     # 2FA — TOTP (Google Authenticator / Authy)
     totp_secret  = models.CharField(max_length=64, blank=True, default='')
     totp_enabled = models.BooleanField(default=False)
+    # Flujo de primer ingreso
+    email_verified       = models.BooleanField(default=True)   # False solo en cuentas creadas por admin
+    must_change_password = models.BooleanField(default=False)  # True hasta que el usuario cambie la contraseña inicial
 
     class Meta:
         app_label = 'classifier'

@@ -7,6 +7,9 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, Sp
 from core.auth_views import (
     CookieLoginView, CookieRefreshView, LogoutView, CurrentUserView, GoogleAuthView,
     Verify2FAView, TOTPSetupView,
+    SendVerificationEmailView, VerifyEmailView,
+    ChangePasswordView,
+    ProfileView, ProfileAvatarView,
 )
 from core.lookup_view import DocumentoLookupView
 from core.admin_views import (
@@ -28,6 +31,11 @@ urlpatterns = [
     path('api/v1/auth/google/',     GoogleAuthView.as_view(),    name='v1_google_auth'),
     path('api/v1/auth/2fa/verify/', Verify2FAView.as_view(),     name='v1_2fa_verify'),
     path('api/v1/auth/2fa/setup/',  TOTPSetupView.as_view(),     name='v1_2fa_setup'),
+    path('api/v1/auth/send-verification-email/', SendVerificationEmailView.as_view(), name='v1_send_verify_email'),
+    path('api/v1/auth/verify-email/',            VerifyEmailView.as_view(),           name='v1_verify_email'),
+    path('api/v1/auth/change-password/',         ChangePasswordView.as_view(),        name='v1_change_password'),
+    path('api/v1/auth/profile/',                 ProfileView.as_view(),               name='v1_profile'),
+    path('api/v1/auth/profile/avatar/',          ProfileAvatarView.as_view(),         name='v1_profile_avatar'),
 
     # ---------------------------------------------------------------------------
     # Auth — alias sin versión mantenidos por backward-compat (deprecar en v2)

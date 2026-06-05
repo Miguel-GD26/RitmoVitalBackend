@@ -4,19 +4,27 @@ classifier.views.patients — CRUD de pacientes.
 
 import logging
 
+from django.contrib.auth.models import User
+from django.db.models import Q
 from drf_spectacular.utils import extend_schema, OpenApiResponse
+from rest_framework.permissions import IsAdminUser
 from rest_framework.views import APIView
 
-from core.permissions import IsInvestigador
-from rest_framework.permissions import IsAdminUser
-from core.responses import ApiResponse
-from core.pagination import build_pagination_metadata
 from classifier.models import Paciente
 from classifier.serializers import (
     PacienteSerializer,
     PacienteWriteSerializer,
     PaginationInputSerializer,
 )
+from classifier.services.patient_service import (
+    UsuarioYaVinculadoError,
+    crear_y_vincular_cuenta,
+    vincular_cuenta_existente,
+)
+from core.models import UserProfile
+from core.pagination import build_pagination_metadata
+from core.permissions import IsInvestigador
+from core.responses import ApiResponse
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +33,9 @@ def _resolve_usuario_cuenta(numero_documento: str):
     """Busca un UserProfile con ese DNI y retorna su User si no tiene paciente vinculado."""
     if not numero_documento:
         return None
-    from core.models import UserProfile
     try:
         profile = UserProfile.objects.select_related('user').get(numero_documento=numero_documento)
-        if not hasattr(profile.user, 'paciente_perfil'):
+        if not Paciente.objects.filter(usuario_cuenta=profile.user).exists():
             return profile.user
     except UserProfile.DoesNotExist:
         pass
@@ -44,18 +51,25 @@ class PatientListView(APIView):
     permission_classes = [IsInvestigador | IsAdminUser]
 
     def get(self, request):
-        from django.db.models import Q
-
         pagination_ser = PaginationInputSerializer(data=request.query_params)
         pagination_ser.is_valid(raise_exception=True)
-        page = pagination_ser.validated_data['page']
+        page      = pagination_ser.validated_data['page']
         page_size = pagination_ser.validated_data['page_size']
 
         search = request.query_params.get('search', '').strip()
         sexo   = request.query_params.get('sexo', '').strip().upper()
-        # Admin e investigador ven todos; médico solo los suyos
-        see_all = request.user.is_staff or request.user.groups.filter(name='investigador').exists()
-        qs = Paciente.objects.all() if see_all else Paciente.objects.filter(creado_por=request.user)
+
+        user_groups = set(request.user.groups.values_list('name', flat=True))
+        see_all = request.user.is_staff or 'investigador' in user_groups
+
+        qs = (
+            Paciente.objects
+            .select_related('creado_por', 'usuario_cuenta')
+            .all() if see_all
+            else Paciente.objects
+            .select_related('creado_por', 'usuario_cuenta')
+            .filter(creado_por=request.user)
+        )
         if search:
             qs = qs.filter(
                 Q(nombre__icontains=search) |
@@ -79,7 +93,7 @@ class PatientListView(APIView):
         ser = PacienteWriteSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        numero = ser.validated_data.get('numero_documento', '').strip()
+        numero   = ser.validated_data.get('numero_documento', '').strip()
         paciente = ser.save(
             creado_por=request.user,
             usuario_cuenta=_resolve_usuario_cuenta(numero),
@@ -99,11 +113,11 @@ class PatientDetailView(APIView):
     permission_classes = [IsInvestigador | IsAdminUser]
 
     def _get_object(self, request, uuid):
+        user_groups = set(request.user.groups.values_list('name', flat=True))
+        see_all = request.user.is_staff or 'investigador' in user_groups
+        qs = Paciente.objects.select_related('creado_por', 'usuario_cuenta')
         try:
-            see_all = request.user.is_staff or request.user.groups.filter(name='investigador').exists()
-            if see_all:
-                return Paciente.objects.get(uuid=uuid)
-            return Paciente.objects.get(uuid=uuid, creado_por=request.user)
+            return qs.get(uuid=uuid) if see_all else qs.get(uuid=uuid, creado_por=request.user)
         except Paciente.DoesNotExist:
             return None
 
@@ -119,10 +133,9 @@ class PatientDetailView(APIView):
             return ApiResponse.not_found("Paciente no encontrado")
         ser = PacienteWriteSerializer(paciente, data=request.data)
         ser.is_valid(raise_exception=True)
-        nuevo_dni = ser.validated_data.get('numero_documento', '').strip()
-        dni_cambio = nuevo_dni != (paciente.numero_documento or '')
+        nuevo_dni  = ser.validated_data.get('numero_documento', '').strip()
         save_kwargs = {}
-        if dni_cambio:
+        if nuevo_dni != (paciente.numero_documento or ''):
             save_kwargs['usuario_cuenta'] = _resolve_usuario_cuenta(nuevo_dni)
         return ApiResponse.success(
             data=PacienteSerializer(ser.save(**save_kwargs)).data,
@@ -135,11 +148,11 @@ class PatientDetailView(APIView):
             return ApiResponse.not_found("Paciente no encontrado")
         ser = PacienteWriteSerializer(paciente, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
-        nuevo_dni = ser.validated_data.get('numero_documento', paciente.numero_documento or '').strip()
-        dni_cambio = 'numero_documento' in ser.validated_data and nuevo_dni != (paciente.numero_documento or '')
         save_kwargs = {}
-        if dni_cambio:
-            save_kwargs['usuario_cuenta'] = _resolve_usuario_cuenta(nuevo_dni)
+        if 'numero_documento' in ser.validated_data:
+            nuevo_dni = ser.validated_data['numero_documento'].strip()
+            if nuevo_dni != (paciente.numero_documento or ''):
+                save_kwargs['usuario_cuenta'] = _resolve_usuario_cuenta(nuevo_dni)
         return ApiResponse.success(
             data=PacienteSerializer(ser.save(**save_kwargs)).data,
             message="Paciente actualizado",
@@ -158,7 +171,7 @@ class PatientVincularView(APIView):
     permission_classes = [IsAdminUser]
 
     def post(self, request, uuid):
-        """Vincular: crea cuenta y la enlaza al paciente, o enlaza una cuenta existente por email."""
+        """Vincular: enlaza cuenta existente o crea una nueva. Toda la lógica está en patient_service."""
         try:
             paciente = Paciente.objects.get(uuid=uuid)
         except Paciente.DoesNotExist:
@@ -167,53 +180,35 @@ class PatientVincularView(APIView):
         if paciente.usuario_cuenta:
             return ApiResponse.error("Este paciente ya tiene una cuenta vinculada.", status_code=400)
 
-        from django.contrib.auth.models import User, Group
-        from core.models import UserProfile
-
         email    = request.data.get('email', '').strip().lower()
         password = request.data.get('password', '')
 
         if not email:
             return ApiResponse.validation_error({'email': ['El correo es requerido.']})
 
-        existing = User.objects.filter(email__iexact=email).first()
-        if existing:
-            if hasattr(existing, 'paciente_perfil'):
+        # ¿Ya existe un usuario con ese email?
+        if User.objects.filter(email__iexact=email).exists():
+            try:
+                vincular_cuenta_existente(paciente, email)
+            except UsuarioYaVinculadoError:
                 return ApiResponse.error("Ese usuario ya está vinculado a otro paciente.", status_code=400)
-            paciente.usuario_cuenta = existing
-            paciente.save()
             return ApiResponse.success(
                 data=PacienteSerializer(paciente).data,
-                message="Paciente vinculado a cuenta existente."
+                message="Paciente vinculado a cuenta existente.",
             )
 
-        if not password or len(password) < 6:
-            return ApiResponse.validation_error({'password': ['Mínimo 6 caracteres.']})
+        if not password:
+            return ApiResponse.validation_error({'password': ['La contraseña es requerida para crear la cuenta.']})
 
-        base = email.split('@')[0]
-        username, counter = base, 1
-        while User.objects.filter(username=username).exists():
-            username = f'{base}{counter}'; counter += 1
-
-        user = User.objects.create_user(
-            username=username, email=email, password=password,
-            first_name=paciente.nombre, last_name=paciente.apellido,
-        )
-        group, _ = Group.objects.get_or_create(name='paciente')
-        user.groups.add(group)
-
-        profile, _ = UserProfile.objects.get_or_create(user=user)
-        profile.tipo_documento   = paciente.tipo_documento
-        profile.numero_documento = paciente.numero_documento
-        profile.save()
-
-        paciente.usuario_cuenta = user
-        paciente.save()
+        try:
+            crear_y_vincular_cuenta(paciente, email, password)
+        except ValueError as e:
+            return ApiResponse.validation_error({'password': [str(e)]})
 
         logger.info("Admin %s vinculó paciente %s con nueva cuenta %s", request.user.username, uuid, email)
         return ApiResponse.created(
             data=PacienteSerializer(paciente).data,
-            message="Cuenta creada y vinculada al paciente."
+            message="Cuenta creada y vinculada al paciente. Se envió un correo de verificación.",
         )
 
     def delete(self, request, uuid):
@@ -226,5 +221,5 @@ class PatientVincularView(APIView):
             return ApiResponse.error("Este paciente no tiene cuenta vinculada.", status_code=400)
 
         paciente.usuario_cuenta = None
-        paciente.save()
+        paciente.save(update_fields=['usuario_cuenta'])
         return ApiResponse.success(data=PacienteSerializer(paciente).data, message="Cuenta desvinculada.")

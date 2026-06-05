@@ -276,6 +276,14 @@ class MLService:
                 'ml_inference_slow',
                 extra={'latency_s': round(latency_s, 3), 'batch_size': n},
             )
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_message(
+                    f'ML inference slow: {latency_s:.1f}s for {n} beats',
+                    level='warning',
+                )
+            except Exception:
+                pass
         return result
 
     def predict_single(self, cwt_image, signal, rr_features):
@@ -351,7 +359,10 @@ class MLServicePool:
 
     @property
     def is_ready(self) -> bool:
-        return not self._pool.empty() or self._version_str is not None
+        # El pool está listo si fue inicializado correctamente (version_str set).
+        # No usar _pool.empty() — el pool puede estar vacío temporalmente mientras
+        # todas las instancias están en uso, lo que no significa que no esté listo.
+        return self._version_str is not None
 
     @property
     def version(self) -> str | None:
@@ -389,6 +400,14 @@ class MLServicePool:
             )
             if latency_s > 60:
                 logger.warning('ml_inference_slow', extra={'latency_s': round(latency_s, 3), 'batch_size': n})
+                try:
+                    import sentry_sdk
+                    sentry_sdk.capture_message(
+                        f'ML inference slow: {latency_s:.1f}s for {n} beats',
+                        level='warning',
+                    )
+                except Exception:
+                    pass
             return result
         finally:
             self._pool.put(model)

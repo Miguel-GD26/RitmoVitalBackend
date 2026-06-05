@@ -343,3 +343,334 @@ class LoginThrottleTests(TestCase):
                 REMOTE_ADDR='10.9.9.9',
             )
         self.assertEqual(last_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+@override_settings(REST_FRAMEWORK=TEST_REST_FRAMEWORK, CACHES=DUMMY_CACHE)
+class ProfileViewTests(TestCase):
+    """
+    GET/PATCH /api/v1/auth/profile/ — perfil editable del usuario autenticado.
+
+    Cubre el bug: PATCH con fecha_nacimiento='' producía 500 porque DateField
+    no acepta cadena vacía. Corregido en ProfileView.patch con conversión a None.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='profile_user',
+            email='profile@test.com',
+            password='TestPass123!',
+            first_name='Juan',
+            last_name='Pérez',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    # ── GET ──────────────────────────────────────────────────────────────────
+
+    def test_get_profile_returns_200(self):
+        response = self.client.get('/api/v1/auth/profile/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.json()['success'])
+
+    def test_get_profile_returns_correct_fields(self):
+        response = self.client.get('/api/v1/auth/profile/')
+        data = response.json()['data']
+        self.assertEqual(data['email'], 'profile@test.com')
+        self.assertEqual(data['username'], 'profile_user')
+        self.assertIn('first_name', data)
+        self.assertIn('last_name', data)
+        self.assertIn('email_verified', data)
+        self.assertIn('must_change_password', data)
+
+    def test_get_profile_requires_auth(self):
+        client = APIClient()  # sin autenticar
+        response = client.get('/api/v1/auth/profile/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    # ── PATCH — casos normales ────────────────────────────────────────────────
+
+    def test_patch_name_returns_200(self):
+        response = self.client.patch(
+            '/api/v1/auth/profile/',
+            {'first_name': 'Carlos', 'last_name': 'López'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.json()['success'])
+
+    def test_patch_name_persists(self):
+        self.client.patch(
+            '/api/v1/auth/profile/',
+            {'first_name': 'Nuevo', 'last_name': 'Apellido'},
+            format='json',
+        )
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.first_name, 'Nuevo')
+        self.assertEqual(self.user.last_name, 'Apellido')
+
+    def test_patch_sexo_returns_200(self):
+        response = self.client.patch(
+            '/api/v1/auth/profile/',
+            {'sexo': 'M'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    # ── PATCH — regresión: fecha_nacimiento vacía no debe producir 500 ────────
+
+    def test_patch_empty_fecha_nacimiento_returns_200_not_500(self):
+        """
+        Regresión: PATCH con fecha_nacimiento='' producía 500 (DataError en DB).
+        DateField no acepta cadena vacía — debe convertirse a None.
+        """
+        response = self.client.patch(
+            '/api/v1/auth/profile/',
+            {
+                'first_name': 'Juan',
+                'last_name': 'Pérez',
+                'fecha_nacimiento': '',
+                'sexo': '',
+                'numero_colegiatura': '',
+                'orcid': '',
+                'institucion': '',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.json()['success'])
+
+    def test_patch_valid_fecha_nacimiento_persists(self):
+        response = self.client.patch(
+            '/api/v1/auth/profile/',
+            {'fecha_nacimiento': '1990-05-15'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        from core.models import UserProfile
+        profile = UserProfile.objects.get(user=self.user)
+        self.assertEqual(str(profile.fecha_nacimiento), '1990-05-15')
+
+    def test_patch_null_fecha_nacimiento_persists(self):
+        """Enviar null explícito también debe funcionar."""
+        response = self.client.patch(
+            '/api/v1/auth/profile/',
+            {'fecha_nacimiento': None},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_patch_does_not_allow_changing_email(self):
+        """El email es de solo lectura — enviar email en PATCH no debe modificarlo."""
+        self.client.patch(
+            '/api/v1/auth/profile/',
+            {'email': 'hacker@evil.com'},
+            format='json',
+        )
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, 'profile@test.com')
+
+    def test_patch_does_not_allow_changing_numero_documento(self):
+        """El número de documento es de solo lectura."""
+        from core.models import UserProfile
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.numero_documento = '12345678'
+        profile.save()
+
+        self.client.patch(
+            '/api/v1/auth/profile/',
+            {'numero_documento': '99999999'},
+            format='json',
+        )
+        profile.refresh_from_db()
+        self.assertEqual(profile.numero_documento, '12345678')
+
+
+LOCMEM_CACHE = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+
+
+# ---------------------------------------------------------------------------
+# Email verification
+# ---------------------------------------------------------------------------
+
+@override_settings(REST_FRAMEWORK=TEST_REST_FRAMEWORK, CACHES=DUMMY_CACHE)
+class VerifyEmailViewTests(TestCase):
+    """POST /api/v1/auth/verify-email/ — validación del token de verificación."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='unverified', email='unverified@test.com', password='Pass123!'
+        )
+        from core.models import UserProfile
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.email_verified = False
+        profile.save()
+
+    def _valid_token(self):
+        from core.email_service import generate_verification_token
+        return generate_verification_token(self.user)
+
+    def test_valid_token_returns_200(self):
+        resp = self.client.post(
+            '/api/v1/auth/verify-email/', {'token': self._valid_token()}, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.json()['success'])
+
+    def test_valid_token_marks_email_as_verified(self):
+        self.client.post(
+            '/api/v1/auth/verify-email/', {'token': self._valid_token()}, format='json'
+        )
+        from core.models import UserProfile
+        profile = UserProfile.objects.get(user=self.user)
+        self.assertTrue(profile.email_verified)
+
+    def test_invalid_token_returns_400(self):
+        resp = self.client.post(
+            '/api/v1/auth/verify-email/', {'token': 'garbage-token-xyz'}, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(resp.json()['success'])
+
+    def test_expired_token_returns_400(self):
+        with patch('core.email_service.validate_verification_token', return_value=None):
+            resp = self.client.post(
+                '/api/v1/auth/verify-email/', {'token': self._valid_token()}, format='json'
+            )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_token_returns_error(self):
+        resp = self.client.post('/api/v1/auth/verify-email/', {}, format='json')
+        self.assertIn(resp.status_code, [
+            status.HTTP_400_BAD_REQUEST,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+        ])
+
+    def test_already_verified_is_idempotent(self):
+        from core.models import UserProfile
+        profile = UserProfile.objects.get(user=self.user)
+        profile.email_verified = True
+        profile.save()
+        resp = self.client.post(
+            '/api/v1/auth/verify-email/', {'token': self._valid_token()}, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+
+@override_settings(REST_FRAMEWORK=TEST_REST_FRAMEWORK, CACHES=LOCMEM_CACHE)
+class SendVerificationEmailViewTests(TestCase):
+    """POST /api/v1/auth/send-verification-email/ — reenvío de email de verificación."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='vsender', email='vsender@test.com', password='Pass123!'
+        )
+        # Usar el objeto cacheado por el signal post_save para que la vista
+        # acceda al mismo objeto y vea los valores actualizados.
+        self.user.profile.email_verified = False
+        self.user.profile.save(update_fields=['email_verified'])
+        self.client.force_authenticate(user=self.user)
+
+    @patch('core.email_service.send_mail')
+    def test_envia_email_y_retorna_200(self, mock_mail):
+        resp = self.client.post('/api/v1/auth/send-verification-email/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.json()['success'])
+        mock_mail.assert_called_once()
+
+    @patch('core.email_service.send_mail')
+    def test_correo_ya_verificado_retorna_400(self, _):
+        self.user.profile.email_verified = True
+        self.user.profile.save(update_fields=['email_verified'])
+        resp = self.client.post('/api/v1/auth/send-verification-email/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch('core.email_service.send_mail')
+    def test_segundo_envio_en_cooldown_retorna_429(self, _):
+        self.client.post('/api/v1/auth/send-verification-email/')
+        resp = self.client.post('/api/v1/auth/send-verification-email/')
+        self.assertEqual(resp.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_requiere_autenticacion(self):
+        resp = APIClient().post('/api/v1/auth/send-verification-email/')
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+# ---------------------------------------------------------------------------
+# Cambio de contraseña
+# ---------------------------------------------------------------------------
+
+@override_settings(REST_FRAMEWORK=TEST_REST_FRAMEWORK, CACHES=DUMMY_CACHE)
+class ChangePasswordViewTests(TestCase):
+    """POST /api/v1/auth/change-password/ — cambio voluntario y forzado de contraseña."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='pass_changer', email='pchanger@test.com', password='OldPass123!'
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_cambio_voluntario_con_password_correcta_retorna_200(self):
+        resp = self.client.post('/api/v1/auth/change-password/', {
+            'current_password': 'OldPass123!',
+            'new_password': 'NewPass456!',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.json()['success'])
+
+    def test_nueva_password_queda_guardada(self):
+        self.client.post('/api/v1/auth/change-password/', {
+            'current_password': 'OldPass123!',
+            'new_password': 'NewPass456!',
+        }, format='json')
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('NewPass456!'))
+
+    def test_password_actual_incorrecta_retorna_400(self):
+        resp = self.client.post('/api/v1/auth/change-password/', {
+            'current_password': 'Wronggg!',
+            'new_password': 'NewPass456!',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_nueva_password_menor_a_8_chars_retorna_400(self):
+        resp = self.client.post('/api/v1/auth/change-password/', {
+            'current_password': 'OldPass123!',
+            'new_password': 'short',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_misma_password_retorna_400(self):
+        resp = self.client.post('/api/v1/auth/change-password/', {
+            'current_password': 'OldPass123!',
+            'new_password': 'OldPass123!',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cambio_forzado_no_requiere_password_actual(self):
+        self.user.profile.must_change_password = True
+        self.user.profile.save(update_fields=['must_change_password'])
+        resp = self.client.post('/api/v1/auth/change-password/', {
+            'new_password': 'NewPass456!',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    def test_cambio_forzado_limpia_flag_must_change_password(self):
+        self.user.profile.must_change_password = True
+        self.user.profile.save(update_fields=['must_change_password'])
+        self.client.post('/api/v1/auth/change-password/', {
+            'new_password': 'NewPass456!',
+        }, format='json')
+        self.user.profile.refresh_from_db()
+        self.assertFalse(self.user.profile.must_change_password)
+
+    def test_requiere_autenticacion(self):
+        resp = APIClient().post('/api/v1/auth/change-password/', {
+            'current_password': 'OldPass123!',
+            'new_password': 'NewPass456!',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
