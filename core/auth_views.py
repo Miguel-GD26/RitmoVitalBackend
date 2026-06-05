@@ -25,6 +25,7 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
+from core.models import UserProfile
 from core.responses import ApiResponse
 
 # Tiempo de vida del token temporal de 2FA (segundos)
@@ -301,6 +302,12 @@ class GoogleAuthView(APIView):
                 paciente_group, _ = Group.objects.get_or_create(name='paciente')
                 user.groups.add(paciente_group)
                 logger.info("Usuario paciente creado via Google OAuth: %s", email)
+
+            # Google verificó el correo — marcarlo como verificado si aún no lo está
+            profile, _ = UserProfile.objects.get_or_create(user=user)
+            if not profile.email_verified:
+                profile.email_verified = True
+                profile.save(update_fields=['email_verified'])
 
             refresh = RefreshToken.for_user(user)
             response = ApiResponse.success(
@@ -711,6 +718,7 @@ class ProfileView(APIView):
             'institucion':      profile.institucion if profile else '',
             'email_verified':        profile.email_verified if profile else True,
             'must_change_password':  profile.must_change_password if profile else False,
+            'totp_enabled':          profile.totp_enabled if profile else False,
         }
 
 
